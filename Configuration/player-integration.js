@@ -1,40 +1,264 @@
-// AI Upscaler Plugin - Player Integration v1.5.1
-// Stable, async-safe, preview-compatible
+// AI Upscaler Plugin - Player Integration v1.4.1
+// Injects AI Upscaler button ONLY on Jellyfin video playback pages
 
 (function () {
     'use strict';
 
     const PLUGIN_ID = 'f87f700e-679d-43e6-9c7c-b3a410dc3f22';
-    const PLUGIN_VERSION = '1.5.1';
+    const PLUGIN_VERSION = '1.4.1';
 
-    // Prevent duplicate injection
-    if (window.__AI_UPSCALER_PLAYER_INIT) {
-        console.debug('AI Upscaler: Player integration already initialized');
-        return;
-    }
-    window.__AI_UPSCALER_PLAYER_INIT = true;
+    let injected = false;
+    let lastUrl = location.href;
 
     const PlayerIntegration = {
-        initialized: false,
 
         init() {
-            if (this.initialized) return;
-            this.initialized = true;
-
-            console.log(`AI Upscaler Player Integration v${PLUGIN_VERSION} starting`);
+            console.log(`AI Upscaler: Player Integration v${PLUGIN_VERSION} initializing`);
 
             this.addStyles();
-            this.waitForPlayer();
-            this.addKeyboardShortcuts();
+            this.watchRouteChanges();
 
-            // Expose globally (used by menu onclick handlers)
-            window.PlayerIntegration = this;
+            // Initial check (in case user reloads directly on /video)
+            this.handleRoute(location.href);
         },
 
         /* ---------------------------------------------------------
-         * PLAYER DETECTION
-         * --------------------------------------------------------- */
+           ROUTE / PAGE DETECTION
+        --------------------------------------------------------- */
 
+        watchRouteChanges() {
+            // Polling works reliably across Jellyfin versions
+            setInterval(() => {
+                if (location.href !== lastUrl) {
+                    lastUrl = location.href;
+                    this.handleRoute(lastUrl);
+                }
+            }, 500);
+        },
+
+        handleRoute(url) {
+            const isVideoPage =
+                url.includes('/web/#/video') ||
+                url.includes('/web/index.html#/video') ||
+                url.match(/#\/video/);
+
+            if (isVideoPage && !injected) {
+                this.waitForPlayer();
+            }
+
+            if (!isVideoPage && injected) {
+                this.cleanup();
+            }
+        },
+
+        /* ---------------------------------------------------------
+           PLAYER DETECTION
+        --------------------------------------------------------- */
+
+        waitForPlayer() {
+            const check = () => {
+                const controls =
+                    document.querySelector('.videoOsdBottom') ||
+                    document.querySelector('.osdControls');
+
+                if (controls) {
+                    this.injectButton();
+                } else {
+                    setTimeout(check, 500);
+                }
+            };
+            check();
+        },
+
+        /* ---------------------------------------------------------
+           BUTTON INJECTION
+        --------------------------------------------------------- */
+
+        injectButton() {
+            if (document.getElementById('aiUpscalerButton')) return;
+
+            const container =
+                document.querySelector('.videoOsdBottom') ||
+                document.querySelector('.osdControls');
+
+            if (!container) return;
+
+            const btn = document.createElement('button');
+            btn.id = 'aiUpscalerButton';
+            btn.className = 'paper-icon-button-light';
+            btn.type = 'button';
+            btn.title = 'AI Upscaler';
+
+            btn.innerHTML = `
+                <span class="material-icons">auto_awesome</span>
+                <span class="upscaler-status">AI</span>
+            `;
+
+            btn.addEventListener('click', e => {
+                e.stopPropagation();
+                this.toggleMenu();
+            });
+
+            container.appendChild(btn);
+
+            injected = true;
+            console.log('AI Upscaler: Button injected into player');
+        },
+
+        cleanup() {
+            const btn = document.getElementById('aiUpscalerButton');
+            const menu = document.getElementById('aiUpscalerQuickMenu');
+
+            if (btn) btn.remove();
+            if (menu) menu.remove();
+
+            injected = false;
+            console.log('AI Upscaler: Player UI cleaned up');
+        },
+
+        /* ---------------------------------------------------------
+           QUICK MENU
+        --------------------------------------------------------- */
+
+        toggleMenu() {
+            const existing = document.getElementById('aiUpscalerQuickMenu');
+            if (existing) {
+                existing.remove();
+                return;
+            }
+
+            const menu = document.createElement('div');
+            menu.id = 'aiUpscalerQuickMenu';
+            menu.className = 'aiUpscalerQuickMenu';
+
+            menu.innerHTML = `
+                <div class="quick-menu-header">
+                    <strong>🚀 AI Upscaler</strong>
+                    <button class="menu-close">×</button>
+                </div>
+                <div class="quick-menu-content">
+                    <button data-scale="2">2× Upscale</button>
+                    <button data-scale="3">3× Upscale</button>
+                    <button data-scale="4">4× Upscale</button>
+                    <hr />
+                    <button data-action="toggle">Toggle Upscaling</button>
+                </div>
+            `;
+
+            menu.querySelector('.menu-close').onclick = () => menu.remove();
+
+            menu.querySelectorAll('[data-scale]').forEach(btn => {
+                btn.onclick = () => {
+                    this.updateConfig({ ScaleFactor: Number(btn.dataset.scale) });
+                    this.notify(`Scale set to ${btn.dataset.scale}×`);
+                    menu.remove();
+                };
+            });
+
+            menu.querySelector('[data-action="toggle"]').onclick = () => {
+                this.toggleUpscaling();
+                menu.remove();
+            };
+
+            document.body.appendChild(menu);
+        },
+
+        /* ---------------------------------------------------------
+           CONFIG / API
+        --------------------------------------------------------- */
+
+        getConfig() {
+            return ApiClient.getPluginConfiguration(PLUGIN_ID);
+        },
+
+        updateConfig(update) {
+            this.getConfig().then(cfg => {
+                ApiClient.updatePluginConfiguration(
+                    PLUGIN_ID,
+                    Object.assign({}, cfg, update)
+                );
+            });
+        },
+
+        toggleUpscaling() {
+            this.getConfig().then(cfg => {
+                const enabled = !cfg.EnablePlugin;
+                this.updateConfig({ EnablePlugin: enabled });
+                this.notify(enabled ? 'Upscaling enabled' : 'Upscaling disabled');
+                this.updateButtonState(enabled);
+            });
+        },
+
+        updateButtonState(enabled) {
+            const status = document.querySelector('#aiUpscalerButton .upscaler-status');
+            if (!status) return;
+            status.textContent = enabled ? 'ON' : 'OFF';
+            status.style.color = enabled ? '#00ff00' : '#ff6666';
+        },
+
+        /* ---------------------------------------------------------
+           UI HELPERS
+        --------------------------------------------------------- */
+
+        notify(msg) {
+            const n = document.createElement('div');
+            n.className = 'ai-upscaler-notification';
+            n.textContent = msg;
+            document.body.appendChild(n);
+            setTimeout(() => n.remove(), 2500);
+        },
+
+        addStyles() {
+            if (document.getElementById('aiUpscalerPlayerStyles')) return;
+
+            const style = document.createElement('style');
+            style.id = 'aiUpscalerPlayerStyles';
+            style.textContent = `
+                #aiUpscalerButton {
+                    margin-left: 8px;
+                    background: rgba(0,0,0,0.6);
+                    border: 1px solid rgba(255,255,255,0.25);
+                    border-radius: 6px;
+                    color: white;
+                    padding: 6px 10px;
+                    cursor: pointer;
+                }
+
+                #aiUpscalerButton:hover {
+                    background: rgba(0,212,255,0.8);
+                }
+
+                .aiUpscalerQuickMenu {
+                    position: fixed;
+                    bottom: 80px;
+                    right: 30px;
+                    background: #111;
+                    border: 2px solid #00d4ff;
+                    border-radius: 10px;
+                    padding: 12px;
+                    z-index: 10000;
+                }
+
+                .ai-upscaler-notification {
+                    position: fixed;
+                    bottom: 20px;
+                    right: 20px;
+                    background: rgba(0,0,0,0.8);
+                    color: #fff;
+                    padding: 10px 14px;
+                    border-radius: 6px;
+                    z-index: 10001;
+                }
+            `;
+            document.head.appendChild(style);
+        }
+    };
+
+    // Start immediately (no config page dependency)
+    PlayerIntegration.init();
+    window.PlayerIntegration = PlayerIntegration;
+
+})();
         waitForPlayer() {
             const tryAttach = () => {
                 const video = document.querySelector('video');
