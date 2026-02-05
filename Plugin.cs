@@ -88,7 +88,12 @@ namespace JellyfinUpscalerPlugin
                 {
                     Name = "UPSCALERWebGLShader",
                     EmbeddedResourcePath = GetType().Namespace + ".Configuration.webgl-upscaler.js"
-                }
+                },
+new PluginPageInfo
+{
+    Name = "UPSCALERLoader",
+    EmbeddedResourcePath = GetType().Namespace + ".Configuration.upscaler-loader.js"
+}
             };
         }
     }
